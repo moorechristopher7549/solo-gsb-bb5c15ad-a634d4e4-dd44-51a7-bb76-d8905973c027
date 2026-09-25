@@ -364,30 +364,46 @@ def _check_chain(cat: Catalog, path: dict[str, Any]):
 # ---------------------------------------------------------------- 仪器历史区间连续性
 
 def _check_history_gaps(cat: Catalog, instrument_code: str):
+    """按同一仪器证书有效期的**闭区间并集**判断历史连续性。
+
+    扫描过程维护“并集当前已覆盖到的最远右端点”：仅当下一张证书的
+    ``valid_from`` 越过该右端点时，其间才存在任何证书都未覆盖的真实
+    断档；嵌套或重叠的区间（如一张长证书覆盖全程、两张短证书落在其
+    内部互不相接）只是并集内部的冗余，不得制造假空隙。断档证据中的
+    前证书取“把并集推进到缺口边界的证书”，保证 ``gap_from`` 是并集
+    真实覆盖终点，而非排序后恰好相邻的某张短证书的截止时刻。
+    """
     issues: list[dict[str, Any]] = []
     certs = sorted(
         [c for c in cat.certs.values() if c["instrument_code"] == instrument_code],
         key=lambda c: (c["valid_from"], c["valid_until"]),
     )
-    for prev, nxt in zip(certs, certs[1:]):
-        if nxt["valid_from"] > prev["valid_until"]:
+    if not certs:
+        return issues
+    covered_until = certs[0]["valid_until"]
+    covered_cert = certs[0]  # 并集最远右端点所属的证书
+    for nxt in certs[1:]:
+        if nxt["valid_from"] > covered_until:
             issues.append(
                 _conflict(
                     "INTERVAL_GAP",
                     "ERROR",
                     f"仪器 {instrument_code} 的校准证书区间不连续："
-                    f"{prev['cert_number']} 止于 {prev['valid_until']}，"
+                    f"{covered_cert['cert_number']} 止于 {covered_until}，"
                     f"{nxt['cert_number']} 始于 {nxt['valid_from']}，中间存在断档",
-                    node=prev["id"],
+                    node=covered_cert["id"],
                     instrument=instrument_code,
                     detail={
-                        "prev_cert_id": prev["id"],
+                        "prev_cert_id": covered_cert["id"],
                         "next_cert_id": nxt["id"],
-                        "gap_from": prev["valid_until"],
+                        "gap_from": covered_until,
                         "gap_to": nxt["valid_from"],
                     },
                 )
             )
+        if nxt["valid_until"] > covered_until:
+            covered_until = nxt["valid_until"]
+            covered_cert = nxt
     return issues
 
 

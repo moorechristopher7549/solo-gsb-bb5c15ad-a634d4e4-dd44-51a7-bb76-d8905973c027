@@ -3,7 +3,8 @@
 基于 **Python FastAPI + SQLite** 构建。实验室提交仪器、校准证书、父子溯源关系及有效区间；
 服务按指定时点从仪器向国家基准重建唯一证书链，校验：
 
-- **证书区间连续性** — 同一仪器历史证书首尾相接，不得断档；
+- **证书区间连续性** — 同一仪器历史证书有效期的**闭区间并集**必须连续、不得断档
+  （嵌套或重叠的区间只是并集内部冗余，不会制造假空隙）；
 - **签名摘要** — 按规范化证书载荷重算摘要并与登记摘要比对（SHA-224/256/384/512）；
 - **测量不确定度** — 扩展不确定度沿溯源方向（下级→上级）只能逐级收缩，即
   下级（子）不确定度不得小于上级（父），且单位必须一致；
@@ -59,7 +60,7 @@ curl -s -X POST http://localhost:8000/api/submissions/preflight \
 pip install -r requirements.txt
 SEED_DEMO=1 TRACE_DB_PATH=./data/traceability.db \
   uvicorn app.main:app --reload --port 8000
-pytest -q        # 运行测试（189 个用例）
+pytest -q        # 运行测试（191 个用例）
 ```
 
 > 所有时间均按 **UTC** 解释，建议使用 `YYYY-MM-DDTHH:MM:SSZ` 格式。
@@ -845,7 +846,7 @@ curl -X DELETE http://localhost:8000/api/calibration-maintenance-windows/MW-2026
 | --- | --- | --- |
 | `NO_ACTIVE_CERTIFICATE` | ERROR | 查询时点仪器无有效证书，链无法开始 |
 | `MULTIPLE_ACTIVE_CERTIFICATES` | ERROR | 同一时点多张证书有效，起点不唯一 |
-| `INTERVAL_GAP` | ERROR | 仪器历史证书区间断档（附前后证书与缺口） |
+| `INTERVAL_GAP` | ERROR | 仪器历史证书有效期的闭区间并集存在断档（附缺口前后证书与边界 `gap_from/gap_to`；嵌套/重叠区间不误报） |
 | `DEAD_END` | ERROR | 非基准证书无有效向上溯源边（附节点） |
 | `PARENT_CERT_NOT_ACTIVE` | ERROR | 父证书在查询时点失效/未生效，链断裂 |
 | `CYCLE_DETECTED` | ERROR | 溯源边构成环（附重复节点、边 id） |
@@ -1496,7 +1497,10 @@ curl -G "http://localhost:8000/api/calibration-bookings/inspection" \
 2. 自起点沿在 `at` 有效的边做 DFS 枚举（同父子证书的并行边合并；检测环；500 条上限保护——达到上限且仍有未展开分支时置 `paths_truncated=true`）；
 3. 终止条件：到达国家基准仪器证书（成链）、无有效边（死路）、父证书失效（断档）、成环；
 4. 对每条链执行节点级（时点有效性、签名摘要）与链级（父区间覆盖校准时刻、
-   不确定度单调不收缩、单位一致、边覆盖校准时刻）检查；对链上全部仪器检查历史区间连续性；
+   不确定度单调不收缩、单位一致、边覆盖校准时刻）检查；对链上全部仪器检查
+   历史区间连续性——按各仪器证书有效期的**闭区间并集**扫描：仅当某时刻不被
+   任何证书覆盖才报 `INTERVAL_GAP`（前证书取把并集推进到缺口边界的证书，
+   缺口边界为并集真实覆盖终点），嵌套/重叠区间不产生假空隙；
 5. 决策：成链且零 ERROR 的路径恰有 1 条 → `unique`；≥2 条 → `ambiguous`；
    0 条 → `broken`。所有 ERROR/WARN 汇总为可解释冲突列表。
    **枚举截断保护**：达到 500 条上限且上限外仍有分支时，已枚举路径仅为样本——
@@ -1612,7 +1616,7 @@ app/
                      maintenance_windows（维护封锁登记 POST + 列表 GET +
                      撤销 DELETE）/
                      export / admin
-tests/test_trace.py          10 个接口级测试
+tests/test_trace.py          12 个接口级测试
 tests/test_undetermined.py   10 个枚举截断“结果未定”测试（undetermined 语义、
                              样本链保留、已见两条合格链仍判多候选、
                              空档/确认/巡检/补位/共同溯源/相容性门禁以
