@@ -364,30 +364,70 @@ def _check_chain(cat: Catalog, path: dict[str, Any]):
 # ---------------------------------------------------------------- 仪器历史区间连续性
 
 def _check_history_gaps(cat: Catalog, instrument_code: str):
+    """按证书有效期**闭区间并集**检查同一仪器历史区间的连续性。
+
+    不能只比较“排序后相邻两张证书”：当一张长证书覆盖全程、另有两张
+    短证书落在其内部且彼此互不相接（嵌套/重叠）时，相邻比较会把并集
+    仍连续的时间误报为断档。这里先把全部闭区间（端点相接即视为连续，
+    因有效性按闭区间判定）合并为若干连通分量，仅在相邻分量之间才存在
+    真正未覆盖的开间隔；每个缺口返回边界两侧的具体证书（前一张取较早
+    分量中覆盖分量右端点的证书，后一张取较晚分量中自分量左端点生效的
+    证书，同值时按证书 id 取字典序首位，保证结果确定）。
+    """
     issues: list[dict[str, Any]] = []
     certs = sorted(
         [c for c in cat.certs.values() if c["instrument_code"] == instrument_code],
-        key=lambda c: (c["valid_from"], c["valid_until"]),
+        key=lambda c: (c["valid_from"], c["valid_until"], c["id"]),
     )
-    for prev, nxt in zip(certs, certs[1:]):
-        if nxt["valid_from"] > prev["valid_until"]:
-            issues.append(
-                _conflict(
-                    "INTERVAL_GAP",
-                    "ERROR",
-                    f"仪器 {instrument_code} 的校准证书区间不连续："
-                    f"{prev['cert_number']} 止于 {prev['valid_until']}，"
-                    f"{nxt['cert_number']} 始于 {nxt['valid_from']}，中间存在断档",
-                    node=prev["id"],
-                    instrument=instrument_code,
-                    detail={
-                        "prev_cert_id": prev["id"],
-                        "next_cert_id": nxt["id"],
-                        "gap_from": prev["valid_until"],
-                        "gap_to": nxt["valid_from"],
-                    },
-                )
+    if len(certs) < 2:
+        return issues
+
+    # 闭区间合并：新区间起点 <= 当前分量右端点（含端点相接）即并入，
+    # 嵌套或完全落在已有分量内的区间不会制造新分量，也就不会制造假空隙。
+    # 每个分量记为 [成员证书列表, 分量左端点, 分量右端点]（可变列表）。
+    components: list[list[Any]] = []
+    for cert in certs:
+        if components and cert["valid_from"] <= components[-1][2]:
+            members, _lo, hi = components[-1]
+            members.append(cert)
+            if cert["valid_until"] > hi:
+                components[-1][2] = cert["valid_until"]
+        else:
+            components.append(
+                [[cert], cert["valid_from"], cert["valid_until"]]
             )
+
+    for (prev_certs, _prev_lo, prev_end), (
+        next_certs,
+        next_start,
+        _next_end,
+    ) in zip(components, components[1:]):
+        prev = min(
+            (c for c in prev_certs if c["valid_until"] == prev_end),
+            key=lambda c: c["id"],
+        )
+        nxt = min(
+            (c for c in next_certs if c["valid_from"] == next_start),
+            key=lambda c: c["id"],
+        )
+        issues.append(
+            _conflict(
+                "INTERVAL_GAP",
+                "ERROR",
+                f"仪器 {instrument_code} 的校准证书区间并集不连续："
+                f"{prev['cert_number']} 止于 {prev['valid_until']}，"
+                f"{nxt['cert_number']} 始于 {nxt['valid_from']}，"
+                "两端点之间（均不含）没有任何证书覆盖，存在断档",
+                node=prev["id"],
+                instrument=instrument_code,
+                detail={
+                    "prev_cert_id": prev["id"],
+                    "next_cert_id": nxt["id"],
+                    "gap_from": prev["valid_until"],
+                    "gap_to": nxt["valid_from"],
+                },
+            )
+        )
     return issues
 
 

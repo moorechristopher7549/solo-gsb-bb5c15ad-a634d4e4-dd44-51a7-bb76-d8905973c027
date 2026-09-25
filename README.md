@@ -3,7 +3,9 @@
 基于 **Python FastAPI + SQLite** 构建。实验室提交仪器、校准证书、父子溯源关系及有效区间；
 服务按指定时点从仪器向国家基准重建唯一证书链，校验：
 
-- **证书区间连续性** — 同一仪器历史证书首尾相接，不得断档；
+- **证书区间连续性** — 同一仪器历史证书有效期的**闭区间并集**不得断档：
+  嵌套或重叠（含一张长证书覆盖全程、短证书落在其内部互不相接）不制造空隙，
+  仅当并集分量之间存在两端均不覆盖的开间隔时报断档；
 - **签名摘要** — 按规范化证书载荷重算摘要并与登记摘要比对（SHA-224/256/384/512）；
 - **测量不确定度** — 扩展不确定度沿溯源方向（下级→上级）只能逐级收缩，即
   下级（子）不确定度不得小于上级（父），且单位必须一致；
@@ -59,7 +61,7 @@ curl -s -X POST http://localhost:8000/api/submissions/preflight \
 pip install -r requirements.txt
 SEED_DEMO=1 TRACE_DB_PATH=./data/traceability.db \
   uvicorn app.main:app --reload --port 8000
-pytest -q        # 运行测试（189 个用例）
+pytest -q        # 运行测试（191 个用例）
 ```
 
 > 所有时间均按 **UTC** 解释，建议使用 `YYYY-MM-DDTHH:MM:SSZ` 格式。
@@ -845,7 +847,7 @@ curl -X DELETE http://localhost:8000/api/calibration-maintenance-windows/MW-2026
 | --- | --- | --- |
 | `NO_ACTIVE_CERTIFICATE` | ERROR | 查询时点仪器无有效证书，链无法开始 |
 | `MULTIPLE_ACTIVE_CERTIFICATES` | ERROR | 同一时点多张证书有效，起点不唯一 |
-| `INTERVAL_GAP` | ERROR | 仪器历史证书区间断档（附前后证书与缺口） |
+| `INTERVAL_GAP` | ERROR | 仪器历史证书闭区间并集断档（嵌套/重叠不报；附缺口两侧前后证书与边界） |
 | `DEAD_END` | ERROR | 非基准证书无有效向上溯源边（附节点） |
 | `PARENT_CERT_NOT_ACTIVE` | ERROR | 父证书在查询时点失效/未生效，链断裂 |
 | `CYCLE_DETECTED` | ERROR | 溯源边构成环（附重复节点、边 id） |
